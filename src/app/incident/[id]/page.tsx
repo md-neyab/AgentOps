@@ -64,7 +64,7 @@ export default async function IncidentDetailPage({
   };
 
   return (
-    <div className="p-6 md:p-8 space-y-6 max-w-5xl mx-auto w-full min-h-screen">
+    <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-5xl mx-auto w-full min-h-screen">
       {/* 1. Header Bar (Clean & Minimalist - Service billing line removed) */}
       <div className="space-y-2">
         <Link

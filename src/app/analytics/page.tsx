@@ -27,7 +27,7 @@ export default async function AnalyticsPage() {
   const incidents = await getIncidents();
 
   return (
-    <div className="p-8 space-y-6 max-w-6xl mx-auto w-full">
+    <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-6xl mx-auto w-full">
       <div>
         <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
           Analytics & Impact
