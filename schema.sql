@@ -31,15 +31,18 @@ CREATE TABLE IF NOT EXISTS public.incidents (
     -- Suggested Remediation Action & Git Patch (JSONB)
     suggested_action JSONB DEFAULT NULL,
     
-    -- Pull Request Tracking
+    -- Pull Request & Execution Tracking
     pr_url TEXT DEFAULT NULL,
     pr_number INTEGER DEFAULT NULL,
     pr_branch TEXT DEFAULT NULL,
+    executed_command TEXT DEFAULT NULL,
+    action_taken TEXT DEFAULT NULL,
     
     -- Audit Timestamps
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
     approved_at TIMESTAMPTZ DEFAULT NULL,
+    resolved_at TIMESTAMPTZ DEFAULT NULL,
     rejected_at TIMESTAMPTZ DEFAULT NULL
 );
 

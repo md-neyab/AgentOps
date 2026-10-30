@@ -27,8 +27,28 @@ export function IncidentTable({ initialIncidents, onStatsChange }: IncidentTable
   const [severityFilter, setSeverityFilter] = useState<string>("all");
 
   useEffect(() => {
+    // 1. Fetch fresh incidents from API on mount
+    const fetchLatest = async () => {
+      try {
+        const res = await fetch("/api/incidents", { cache: "no-store" });
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.incidents) && data.incidents.length > 0) {
+            setIncidents(data.incidents);
+            onStatsChange?.(data.incidents);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    fetchLatest();
+
+    // 2. Supabase Realtime channel subscription
+    let channel: any = null;
     if (isSupabaseConfigured()) {
-      const channel = supabase
+      channel = supabase
         .channel("incidents-realtime-table")
         .on(
           "postgres_changes",
@@ -52,28 +72,15 @@ export function IncidentTable({ initialIncidents, onStatsChange }: IncidentTable
           }
         )
         .subscribe();
-
-      return () => {
-        supabase.removeChannel(channel);
-      };
-    } else {
-      const interval = setInterval(async () => {
-        try {
-          const res = await fetch("/api/incidents");
-          if (res.ok) {
-            const data = await res.json();
-            if (data.incidents) {
-              setIncidents(data.incidents);
-              onStatsChange?.(data.incidents);
-            }
-          }
-        } catch {
-          // ignore
-        }
-      }, 3000);
-
-      return () => clearInterval(interval);
     }
+
+    // 3. Dual-layer 2.5-second polling fallback to guarantee immediate sync
+    const interval = setInterval(fetchLatest, 2500);
+
+    return () => {
+      if (channel) supabase.removeChannel(channel);
+      clearInterval(interval);
+    };
   }, [onStatsChange]);
 
   const filteredIncidents = incidents.filter((incident) => {

@@ -10,7 +10,19 @@ export const isServerSupabaseConfigured = () => {
   return Boolean(url && !url.includes("placeholder") && key && !key.includes("placeholder"));
 };
 
-export const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
+export const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false,
+  },
+  global: {
+    fetch: (url, options = {}) =>
+      fetch(url, {
+        ...options,
+        cache: "no-store",
+      }),
+  },
+});
 
 // In-memory mock store fallback for standalone development / demo reliability
 declare global {
@@ -195,6 +207,7 @@ FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaS
     environment: "production-us-east",
     severity: "medium",
     status: "approved",
+    action_taken: "pull_request",
     raw_log: `ERROR: deadlock detected
 DETAIL: Process 8291 waits for ExclusiveLock on transaction 91823; blocked by process 8292.
 Process 8292 waits for ShareLock on transaction 91822; blocked by process 8291.
@@ -269,6 +282,7 @@ LOCATION: DeadLockReport, deadlock.c:1140`,
     created_at: new Date(Date.now() - 1000 * 60 * 120).toISOString(),
     updated_at: new Date(Date.now() - 1000 * 60 * 60).toISOString(),
     approved_at: new Date(Date.now() - 1000 * 60 * 60).toISOString(),
+    resolved_at: new Date(Date.now() - 1000 * 60 * 60).toISOString(),
     rejected_at: null,
   },
 ];

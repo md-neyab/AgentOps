@@ -7,11 +7,13 @@ import {
   AgentGammaOutput, 
   AgentInfraOutput,
   MultiAgentWorkflow,
-  SuggestedAction 
+  SuggestedAction,
+  RoutingDecision,
+  isInfraRouting
 } from "./types";
 
 const apiKey = process.env.GROQ_API_KEY || "";
-const groqModel = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
+const groqModel = process.env.GROQ_MODEL || "qwen/qwen3.8-27b";
 
 export const isGroqConfigured = () => {
   return Boolean(apiKey) && !apiKey.includes("placeholder") && !apiKey.startsWith("gsk_placeholder");
@@ -21,6 +23,42 @@ function getGroqClient() {
   return new Groq({
     apiKey: apiKey,
   });
+}
+
+/**
+ * Resilient JSON parser that handles code blocks, markdown text, and malformed responses
+ */
+function safeParseLLMJson<T extends object>(rawContent: string | undefined | null, fallback: T): T {
+  if (!rawContent || typeof rawContent !== "string") {
+    return fallback;
+  }
+
+  try {
+    let clean = rawContent.trim();
+    if (clean.startsWith("```json")) {
+      clean = clean.slice(7);
+    } else if (clean.startsWith("```")) {
+      clean = clean.slice(3);
+    }
+    if (clean.endsWith("```")) {
+      clean = clean.slice(0, -3);
+    }
+    clean = clean.trim();
+    const parsed = JSON.parse(clean);
+    return { ...fallback, ...parsed };
+  } catch {
+    try {
+      const match = rawContent.match(/\{[\s\S]*\}/);
+      if (match) {
+        const parsed = JSON.parse(match[0]);
+        return { ...fallback, ...parsed };
+      }
+    } catch {
+      // Fallback below
+    }
+    console.warn("Groq JSON parsing failed, using fallback schema");
+    return fallback;
+  }
 }
 
 // ============================================================================
@@ -63,16 +101,21 @@ export async function runAgentAlpha_Triage(
       response_format: { type: "json_object" },
     });
 
-    const parsed = JSON.parse(res.choices[0]?.message?.content || "{}");
+    const parsed = safeParseLLMJson(
+      res.choices[0]?.message?.content,
+      generateFallbackAgentAlpha(rawLog, serviceName, environment)
+    );
+
     const validSeverities: IncidentSeverity[] = ["critical", "high", "medium", "low"];
-    const severity: IncidentSeverity = validSeverities.includes(parsed.severity) ? parsed.severity : "high";
+    const parsedSeverity = String(parsed.severity || "").toLowerCase() as IncidentSeverity;
+    const severity: IncidentSeverity = validSeverities.includes(parsedSeverity) ? parsedSeverity : "high";
 
     return {
       agent_name: "Agent Alpha (Triage & Alert)",
       severity,
-      root_cause: parsed.root_cause || "Anomaly detected in server execution pipeline.",
+      root_cause: (parsed.root_cause as string) || "Anomaly detected in server execution pipeline.",
       needs_senior_escalation: Boolean(parsed.needs_senior_escalation ?? (severity === "critical")),
-      simulated_slack_alert_text: parsed.simulated_slack_alert_text || `⚠️ Alert: Incident detected on ${serviceName} (${environment})`,
+      simulated_slack_alert_text: (parsed.simulated_slack_alert_text as string) || `⚠️ Alert: Incident detected on ${serviceName} (${environment})`,
       anomaly_confidence: typeof parsed.anomaly_confidence === "number" ? parsed.anomaly_confidence : 0.96,
     };
   } catch (err) {
@@ -88,8 +131,8 @@ export async function runAgentAlpha_Triage(
 const AGENT_BETA_PROMPT = `You are Agent Beta, the Manager AI & Operations Coordinator.
 Your job is task assignment, priority grading, and ROUTING DECISION:
 Determine if this issue is:
-1. "coder_agent": Requires a source code bugfix/patch (e.g. memory leak, null pointer, syntax error, algorithmic defect).
-2. "infra_agent": Requires an infrastructure/server command (e.g. database pool exhaustion, deadlocked process termination, container/pod rollout restart, redis flush, daemon restart).
+1. "coder_agent" (or "code_bug"): Requires a source code bugfix/patch (e.g. memory leak, null pointer, syntax error, algorithmic defect).
+2. "infra_agent" (or "server_infrastructure"): Requires an infrastructure/server command (e.g. database pool exhaustion, deadlocked process termination, container/pod rollout restart, redis flush, daemon restart).
 
 Return ONLY a strict JSON object:
 {
@@ -97,7 +140,7 @@ Return ONLY a strict JSON object:
   "jira_ticket_title": "Formal Jira title: e.g. 'OPS-4921: Memory leak in session cache'",
   "priority_level": "P0 - Blocker" | "P1 - High" | "P2 - Medium" | "P3 - Low",
   "sla_target": "e.g. '15 minutes' or '1 hour'",
-  "routing_decision": "coder_agent" | "infra_agent",
+  "routing_decision": "coder_agent" | "infra_agent" | "code_bug" | "server_infrastructure",
   "routing_reason": "One sentence explaining why it was routed to Coder AI or Infra AI."
 }
 Return only raw JSON.`;
@@ -126,19 +169,28 @@ export async function runAgentBeta_OpsCoordinator(
       response_format: { type: "json_object" },
     });
 
-    const parsed = JSON.parse(res.choices[0]?.message?.content || "{}");
+    const parsed = safeParseLLMJson(
+      res.choices[0]?.message?.content,
+      generateFallbackAgentBeta(rawLog, serviceName, alphaTriage)
+    );
+
     const validPriorities = ["P0 - Blocker", "P1 - High", "P2 - Medium", "P3 - Low"] as const;
-    const priority_level = validPriorities.includes(parsed.priority_level) ? parsed.priority_level : "P1 - High";
-    const routing_decision = parsed.routing_decision === "infra_agent" ? "infra_agent" : "coder_agent";
+    const priority_level = validPriorities.includes(parsed.priority_level as (typeof validPriorities)[number])
+      ? (parsed.priority_level as (typeof validPriorities)[number])
+      : "P1 - High";
+
+    const decisionStr = String(parsed.routing_decision || "").toLowerCase();
+    const isInfra = isInfraRouting(decisionStr);
+    const routing_decision: RoutingDecision = isInfra ? "infra_agent" : "coder_agent";
 
     return {
       agent_name: "Agent Beta (Manager AI & Ops Coordinator)",
-      assigned_team: parsed.assigned_team || `${serviceName} Engineering Squad`,
-      jira_ticket_title: parsed.jira_ticket_title || `OPS-${Math.floor(1000 + Math.random() * 9000)}: Investigate ${serviceName} incident`,
+      assigned_team: (parsed.assigned_team as string) || `${serviceName} Engineering Squad`,
+      jira_ticket_title: (parsed.jira_ticket_title as string) || `OPS-${Math.floor(1000 + Math.random() * 9000)}: Investigate ${serviceName} incident`,
       priority_level,
-      sla_target: parsed.sla_target || (alphaTriage.severity === "critical" ? "15 minutes" : "1 hour"),
+      sla_target: (parsed.sla_target as string) || (alphaTriage.severity === "critical" ? "15 minutes" : "1 hour"),
       routing_decision,
-      routing_reason: parsed.routing_reason || (routing_decision === "coder_agent" 
+      routing_reason: (parsed.routing_reason as string) || (routing_decision === "coder_agent" 
         ? "Defect identified in application logic requiring a Git patch."
         : "Operational saturation requiring infrastructure restart command."),
     };
@@ -188,15 +240,19 @@ export async function runAgentGamma_RemediationCoder(
       response_format: { type: "json_object" },
     });
 
-    const parsed = JSON.parse(res.choices[0]?.message?.content || "{}");
-    const cleanBranch = (parsed.branch_name || `hotfix/${serviceName}-patch`).replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase();
+    const parsed = safeParseLLMJson(
+      res.choices[0]?.message?.content,
+      generateFallbackAgentGamma(rawLog, serviceName, alphaTriage)
+    );
+
+    const cleanBranch = String(parsed.branch_name || `hotfix/${serviceName}-patch`).replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase();
 
     return {
       agent_name: "Coder AI (Remediation Coder)",
-      file_path: parsed.file_path || `src/${serviceName}/handler.ts`,
-      patch_content: parsed.patch_content || `@@ -1,2 +1,3 @@\n-// Guard added by Coder AI\n+// Guard applied`,
+      file_path: (parsed.file_path as string) || `src/${serviceName}/handler.ts`,
+      patch_content: (parsed.patch_content as string) || `@@ -1,2 +1,3 @@\n-// Guard added by Coder AI\n+// Guard applied`,
       branch_name: cleanBranch,
-      commit_message: parsed.commit_message || `fix(${serviceName}): address unhandled exception`,
+      commit_message: (parsed.commit_message as string) || `fix(${serviceName}): address unhandled exception`,
     };
   } catch (err) {
     console.error("Coder AI failed, using fallback:", err);
@@ -245,14 +301,17 @@ export async function runAgentInfra_OpsRemediation(
       response_format: { type: "json_object" },
     });
 
-    const parsed = JSON.parse(res.choices[0]?.message?.content || "{}");
+    const parsed = safeParseLLMJson(
+      res.choices[0]?.message?.content,
+      generateFallbackAgentInfra(rawLog, serviceName, environment)
+    );
 
     return {
       agent_name: "Infra AI (Server Operations)",
-      terminal_command: parsed.terminal_command || `kubectl rollout restart deployment/${serviceName} -n ${environment}`,
-      target_environment: parsed.target_environment || environment,
-      estimated_impact: parsed.estimated_impact || "Graceful rolling restart of service containers. Clears deadlocks and connection leaks.",
-      rollback_command: parsed.rollback_command,
+      terminal_command: (parsed.terminal_command as string) || `kubectl rollout restart deployment/${serviceName} -n ${environment}`,
+      target_environment: (parsed.target_environment as string) || environment,
+      estimated_impact: (parsed.estimated_impact as string) || "Graceful rolling restart of service containers. Clears deadlocks and connection leaks.",
+      rollback_command: (parsed.rollback_command as string) || undefined,
     };
   } catch (err) {
     console.error("Infra AI failed, using fallback:", err);
@@ -280,8 +339,10 @@ export async function orchestrateMultiAgentPipeline(
   let infraAgent: AgentInfraOutput | null = null;
   let suggestedAction: SuggestedAction;
 
-  if (opsAgent.routing_decision === "infra_agent") {
-    // STATE B: Route to Infra AI
+  const isInfra = isInfraRouting(opsAgent.routing_decision);
+
+  if (isInfra) {
+    // STATE B: Route to Infra AI (Server Infrastructure)
     infraAgent = await runAgentInfra_OpsRemediation(rawLog, serviceName, environment, triageAgent, opsAgent);
     suggestedAction = {
       action_type: "infra_command",
@@ -289,9 +350,10 @@ export async function orchestrateMultiAgentPipeline(
       terminal_command: infraAgent.terminal_command,
       target_environment: infraAgent.target_environment,
       estimated_impact: infraAgent.estimated_impact,
+      rollback_command: infraAgent.rollback_command,
     };
   } else {
-    // STATE A: Route to Coder AI
+    // STATE A: Route to Coder AI (Code Bug)
     coderAgent = await runAgentGamma_RemediationCoder(rawLog, serviceName, triageAgent, opsAgent);
     suggestedAction = {
       action_type: "pull_request",
@@ -319,7 +381,7 @@ export async function orchestrateMultiAgentPipeline(
     title: opsAgent.jira_ticket_title || `Incident detected in ${serviceName}`,
     severity: triageAgent.severity,
     root_cause: triageAgent.root_cause,
-    executive_summary: `${triageAgent.root_cause} Routed by Manager AI to ${opsAgent.routing_decision === "infra_agent" ? "Infra AI" : "Coder AI"}.`,
+    executive_summary: `${triageAgent.root_cause} Routed by Manager AI to ${isInfra ? "Infra AI" : "Coder AI"}.`,
     confidence_score: triageAgent.anomaly_confidence,
     impact_score: triageAgent.severity === "critical" ? 9.5 : triageAgent.severity === "high" ? 8.0 : 6.0,
     suggested_action: suggestedAction,
@@ -406,7 +468,7 @@ function generateFallbackAgentBeta(rawLog: string, serviceName: string, alpha: A
   };
 }
 
-function generateFallbackAgentGamma(rawLog: string, serviceName: string, alpha: AgentAlphaOutput): AgentGammaOutput {
+function generateFallbackAgentGamma(rawLog: string, serviceName: string, _alpha: AgentAlphaOutput): AgentGammaOutput {
   return {
     agent_name: "Coder AI (Remediation Coder)",
     file_path: `src/${serviceName}/session-cache.ts`,

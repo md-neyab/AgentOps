@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createGitHubPullRequest } from "@/lib/github";
 import { isServerSupabaseConfigured, supabaseAdmin, getMockStore } from "@/lib/supabase/server";
-import { Incident } from "@/lib/types";
+import { Incident, isInfraRouting } from "@/lib/types";
 
 export async function POST(
   req: NextRequest,
@@ -18,7 +18,7 @@ export async function POST(
         .select("*")
         .eq("id", id)
         .single();
-      if (!error && data) incident = data;
+      if (!error && data) incident = data as Incident;
     }
 
     if (!incident) {
@@ -30,7 +30,13 @@ export async function POST(
     }
 
     const action = incident.suggested_action || incident.ai_analysis?.suggested_action;
-    const isInfra = action?.category === "infra" || action?.action_type === "infra_command";
+    const workflowDecision = incident.multi_agent_workflow?.ops_agent?.routing_decision;
+    const isInfra = 
+      action?.category === "infra" || 
+      action?.action_type === "infra_command" ||
+      isInfraRouting(workflowDecision) ||
+      Boolean(action?.terminal_command);
+
     const now = new Date().toISOString();
 
     // ------------------------------------------------------------------------
@@ -39,26 +45,45 @@ export async function POST(
     if (isInfra) {
       const command = action?.terminal_command || `kubectl rollout restart deployment/${incident.service_name} -n ${incident.environment}`;
 
-      // Update Database Record
+      // Update Database Record (Supabase)
       if (isServerSupabaseConfigured()) {
-        await supabaseAdmin
+        const fullPayload = {
+          status: "approved",
+          resolved_at: now,
+          action_taken: "infra_command",
+          executed_command: command,
+          approved_at: now,
+          updated_at: now,
+        };
+
+        const { error: dbError } = await supabaseAdmin
           .from("incidents")
-          .update({
-            status: "approved",
-            executed_command: command,
-            approved_at: now,
-            updated_at: now,
-          })
+          .update(fullPayload)
           .eq("id", id);
+
+        if (dbError) {
+          console.warn("Supabase update warning with full payload, trying standard fields:", dbError.message);
+          // Fallback if custom columns resolved_at / action_taken / executed_command are pending in user DB
+          await supabaseAdmin
+            .from("incidents")
+            .update({
+              status: "approved",
+              approved_at: now,
+              updated_at: now,
+            })
+            .eq("id", id);
+        }
       }
 
-      // Update Mock Store
+      // Update In-Memory Mock Store
       const store = getMockStore();
       const idx = store.findIndex((item) => item.id === id);
       if (idx !== -1) {
         store[idx] = {
           ...store[idx],
           status: "approved",
+          resolved_at: now,
+          action_taken: "infra_command",
           executed_command: command,
           approved_at: now,
           updated_at: now,
@@ -69,10 +94,12 @@ export async function POST(
         success: true,
         status: "approved",
         action_type: "infra_command",
+        action_taken: "infra_command",
         category: "infra",
         executed_command: command,
         message: "Command executed on target server",
         approved_at: now,
+        resolved_at: now,
       });
     }
 
@@ -94,17 +121,36 @@ export async function POST(
     });
 
     if (isServerSupabaseConfigured()) {
-      await supabaseAdmin
+      const fullPayload = {
+        status: "approved",
+        resolved_at: now,
+        action_taken: "pull_request",
+        pr_url: prResult.pr_url,
+        pr_number: prResult.pr_number,
+        pr_branch: prResult.branch,
+        approved_at: now,
+        updated_at: now,
+      };
+
+      const { error: dbError } = await supabaseAdmin
         .from("incidents")
-        .update({
-          status: "approved",
-          pr_url: prResult.pr_url,
-          pr_number: prResult.pr_number,
-          pr_branch: prResult.branch,
-          approved_at: now,
-          updated_at: now,
-        })
+        .update(fullPayload)
         .eq("id", id);
+
+      if (dbError) {
+        console.warn("Supabase update warning with full payload, trying standard fields:", dbError.message);
+        await supabaseAdmin
+          .from("incidents")
+          .update({
+            status: "approved",
+            pr_url: prResult.pr_url,
+            pr_number: prResult.pr_number,
+            pr_branch: prResult.branch,
+            approved_at: now,
+            updated_at: now,
+          })
+          .eq("id", id);
+      }
     }
 
     const store = getMockStore();
@@ -113,6 +159,8 @@ export async function POST(
       store[idx] = {
         ...store[idx],
         status: "approved",
+        resolved_at: now,
+        action_taken: "pull_request",
         pr_url: prResult.pr_url,
         pr_number: prResult.pr_number,
         pr_branch: prResult.branch,
@@ -125,12 +173,14 @@ export async function POST(
       success: true,
       status: "approved",
       action_type: "pull_request",
+      action_taken: "pull_request",
       category: "code",
       pr_url: prResult.pr_url,
       pr_number: prResult.pr_number,
       pr_branch: prResult.branch,
       simulated: prResult.simulated,
       approved_at: now,
+      resolved_at: now,
     });
   } catch (error) {
     console.error("Failed to approve incident:", error);

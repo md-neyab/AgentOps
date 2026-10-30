@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { 
   CheckCircle2, 
@@ -8,11 +8,9 @@ import {
   Loader2, 
   ExternalLink, 
   GitPullRequest, 
-  Terminal,
-  Server,
-  Sparkles
+  Terminal
 } from "lucide-react";
-import { Incident } from "@/lib/types";
+import { Incident, isInfraRouting } from "@/lib/types";
 
 interface ApprovalDockProps {
   incident: Incident;
@@ -24,11 +22,16 @@ export function ApprovalDock({ incident, onStatusUpdated }: ApprovalDockProps) {
   const [isApproving, setIsApproving] = useState(false);
   const [isRejecting, setIsRejecting] = useState(false);
 
+  useEffect(() => {
+    setCurrentIncident(incident);
+  }, [incident]);
+
   const action = currentIncident.suggested_action || currentIncident.ai_analysis?.suggested_action;
+  const rawRouting = currentIncident.multi_agent_workflow?.ops_agent?.routing_decision;
   const isInfra = 
     action?.category === "infra" || 
     action?.action_type === "infra_command" ||
-    currentIncident.multi_agent_workflow?.ops_agent?.routing_decision === "infra_agent" ||
+    isInfraRouting(rawRouting) ||
     Boolean(action?.terminal_command);
 
   const handleApprove = async () => {
@@ -48,11 +51,13 @@ export function ApprovalDock({ incident, onStatusUpdated }: ApprovalDockProps) {
       const updated: Incident = {
         ...currentIncident,
         status: "approved",
-        pr_url: data.pr_url,
-        pr_number: data.pr_number,
-        pr_branch: data.pr_branch,
-        executed_command: data.executed_command || action?.terminal_command,
-        approved_at: data.approved_at,
+        resolved_at: data.resolved_at || new Date().toISOString(),
+        action_taken: data.action_taken || (isInfra ? "infra_command" : "pull_request"),
+        pr_url: data.pr_url || null,
+        pr_number: data.pr_number || null,
+        pr_branch: data.pr_branch || null,
+        executed_command: data.executed_command || action?.terminal_command || null,
+        approved_at: data.approved_at || new Date().toISOString(),
       };
 
       setCurrentIncident(updated);
@@ -66,10 +71,10 @@ export function ApprovalDock({ incident, onStatusUpdated }: ApprovalDockProps) {
       } else {
         toast.success(
           data.simulated
-            ? `Patch approved! GitHub PR #${data.pr_number} created (Simulated).`
-            : `Patch approved! GitHub Pull Request #${data.pr_number} created.`,
+            ? `Patch approved! GitHub PR #${data.pr_number || 1} created (Simulated).`
+            : `Patch approved! GitHub Pull Request #${data.pr_number || 1} created.`,
           {
-            description: `Target branch: ${data.pr_branch}`,
+            description: `Target branch: ${data.pr_branch || "hotfix/auto-remediation"}`,
             duration: 6000,
           }
         );
@@ -99,7 +104,7 @@ export function ApprovalDock({ incident, onStatusUpdated }: ApprovalDockProps) {
       const updated: Incident = {
         ...currentIncident,
         status: "rejected",
-        rejected_at: data.rejected_at,
+        rejected_at: data.rejected_at || new Date().toISOString(),
       };
 
       setCurrentIncident(updated);
@@ -225,7 +230,12 @@ export function ApprovalDock({ incident, onStatusUpdated }: ApprovalDockProps) {
                 <span>View Pull Request #{currentIncident.pr_number || "Open"}</span>
                 <ExternalLink className="w-3.5 h-3.5" />
               </a>
-            ) : null}
+            ) : (
+              <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-50 text-xs font-semibold text-emerald-700 border border-emerald-200">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                <span>Resolved & Approved</span>
+              </div>
+            )}
           </div>
         ) : (
           <span className="text-xs font-medium text-slate-500 px-3 py-1.5 rounded-xl bg-slate-100">

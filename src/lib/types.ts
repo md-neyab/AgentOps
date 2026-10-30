@@ -2,6 +2,24 @@ export type IncidentSeverity = "critical" | "high" | "medium" | "low";
 export type IncidentStatus = "pending" | "approved" | "rejected";
 export type IncidentCategory = "code" | "infra";
 
+export type RoutingDecision = 
+  | "coder_agent" 
+  | "infra_agent" 
+  | "code_bug" 
+  | "server_infrastructure";
+
+export function isInfraRouting(decision?: string | null): boolean {
+  if (!decision) return false;
+  const d = decision.toLowerCase().trim();
+  return d === "infra_agent" || d === "server_infrastructure" || d.includes("infra");
+}
+
+export function isCodeRouting(decision?: string | null): boolean {
+  if (!decision) return false;
+  const d = decision.toLowerCase().trim();
+  return d === "coder_agent" || d === "code_bug" || d.includes("code");
+}
+
 export interface SuggestedAction {
   action_type: "pull_request" | "infra_command" | "config_update" | "rollback";
   category: IncidentCategory;
@@ -15,6 +33,7 @@ export interface SuggestedAction {
   terminal_command?: string;
   target_environment?: string;
   estimated_impact?: string;
+  rollback_command?: string;
 }
 
 export interface AgentAlphaOutput {
@@ -32,7 +51,7 @@ export interface AgentBetaOutput {
   jira_ticket_title: string;
   priority_level: "P0 - Blocker" | "P1 - High" | "P2 - Medium" | "P3 - Low";
   sla_target: string;
-  routing_decision: "coder_agent" | "infra_agent";
+  routing_decision: RoutingDecision;
   routing_reason: string;
 }
 
@@ -87,9 +106,11 @@ export interface Incident {
   pr_number: number | null;
   pr_branch: string | null;
   executed_command?: string | null;
+  action_taken?: "pull_request" | "infra_command" | string | null;
   created_at: string;
   updated_at: string;
   approved_at: string | null;
+  resolved_at?: string | null;
   rejected_at: string | null;
 }
 

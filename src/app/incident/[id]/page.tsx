@@ -2,7 +2,6 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { TerminalViewer } from "@/components/terminal-viewer";
 import { MultiAgentStepper } from "@/components/multi-agent-stepper";
-import { ApprovalDock } from "@/components/approval-dock";
 import { isServerSupabaseConfigured, supabaseAdmin, getMockStore } from "@/lib/supabase/server";
 import { Incident } from "@/lib/types";
 import { ArrowLeft } from "lucide-react";
@@ -45,80 +44,78 @@ export default async function IncidentDetailPage({
     switch (severity) {
       case "critical":
         return (
-          <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
-            Critical
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-rose-50 text-rose-700 border border-rose-200">
+            Critical Severity
           </span>
         );
       case "high":
         return (
-          <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-orange-50 text-orange-700 border border-orange-200">
-            High
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-orange-50 text-orange-700 border border-orange-200">
+            High Severity
           </span>
         );
       default:
         return (
-          <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200">
-            Medium
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200">
+            Medium Severity
           </span>
         );
     }
   };
 
   return (
-    <div className="p-8 space-y-6 max-w-6xl mx-auto w-full flex flex-col min-h-screen">
-      {/* Top Navigation */}
-      <div>
+    <div className="p-6 md:p-8 space-y-6 max-w-5xl mx-auto w-full min-h-screen">
+      {/* 1. Header Bar (Clean & Minimalist - Service billing line removed) */}
+      <div className="space-y-2">
         <Link
           href="/"
-          className="inline-flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-slate-800 transition-colors"
+          className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-500 hover:text-slate-800 transition-colors uppercase tracking-wider"
         >
-          <ArrowLeft className="w-4 h-4" />
+          <ArrowLeft className="w-3.5 h-3.5" />
           <span>Back to Dashboard</span>
         </Link>
-      </div>
 
-      {/* Incident Title */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2">
         <div>
-          <div className="flex items-center gap-3 mb-1.5">
+          <div className="flex items-center gap-2 mb-1">
             {getSeverityBadge(incident.severity)}
-            <h1 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
-              {incident.title}
-            </h1>
+            <span className="text-xs font-mono text-slate-400">
+              INC-{incident.id.slice(0, 8)}
+            </span>
           </div>
-          <div className="text-xs text-slate-500 font-medium">
-            Service: <strong className="text-slate-700 font-semibold">{incident.service_name}</strong> •{" "}
-            Detected {new Date(incident.created_at).toLocaleTimeString()}
-          </div>
+          <h1 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">
+            {incident.title}
+          </h1>
         </div>
       </div>
 
-      {/* Split View */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 flex-1 min-h-[600px]">
-        {/* Left Side: Original Log */}
-        <div className="h-[600px] lg:h-auto">
-          <TerminalViewer
-            rawLog={incident.raw_log}
-            serviceName={incident.service_name}
-            environment={incident.environment}
-            timestamp={incident.created_at}
-          />
+      {/* 2. Multi-Agent Orchestration Tree (Main AI at top center, Workers below) */}
+      <section>
+        <MultiAgentStepper
+          analysis={incident.ai_analysis}
+          suggestedAction={incident.suggested_action}
+          workflow={incident.multi_agent_workflow || incident.ai_analysis?.multi_agent_workflow}
+          incident={incident}
+        />
+      </section>
+
+      {/* 3. Original Error Log (Sabse Niche, In Clean White Theme) */}
+      <section className="space-y-2 pt-2">
+        <div>
+          <h3 className="text-sm font-bold text-slate-900">
+            Original Error Telemetry
+          </h3>
+          <p className="text-xs text-slate-500 font-medium">
+            Runtime crash trace captured before remediation
+          </p>
         </div>
 
-        {/* Right Side: Multi-Agent Orchestration Stepper */}
-        <div className="h-[600px] lg:h-auto">
-          <MultiAgentStepper
-            analysis={incident.ai_analysis}
-            suggestedAction={incident.suggested_action}
-            workflow={incident.multi_agent_workflow || incident.ai_analysis?.multi_agent_workflow}
-          />
-        </div>
-      </div>
-
-      {/* Bottom Floating Approval Dock */}
-      <div className="sticky bottom-6 z-30 pt-2">
-        <ApprovalDock incident={incident} />
-      </div>
+        <TerminalViewer
+          rawLog={incident.raw_log}
+          serviceName={incident.service_name}
+          environment={incident.environment}
+          timestamp={incident.created_at}
+        />
+      </section>
     </div>
   );
 }
