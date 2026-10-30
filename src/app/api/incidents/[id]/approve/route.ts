@@ -30,13 +30,61 @@ export async function POST(
     }
 
     const action = incident.suggested_action || incident.ai_analysis?.suggested_action;
+    const isInfra = action?.category === "infra" || action?.action_type === "infra_command";
+    const now = new Date().toISOString();
+
+    // ------------------------------------------------------------------------
+    // SITUATION B: Infra Issue -> Server Command Execution
+    // ------------------------------------------------------------------------
+    if (isInfra) {
+      const command = action?.terminal_command || `kubectl rollout restart deployment/${incident.service_name} -n ${incident.environment}`;
+
+      // Update Database Record
+      if (isServerSupabaseConfigured()) {
+        await supabaseAdmin
+          .from("incidents")
+          .update({
+            status: "approved",
+            executed_command: command,
+            approved_at: now,
+            updated_at: now,
+          })
+          .eq("id", id);
+      }
+
+      // Update Mock Store
+      const store = getMockStore();
+      const idx = store.findIndex((item) => item.id === id);
+      if (idx !== -1) {
+        store[idx] = {
+          ...store[idx],
+          status: "approved",
+          executed_command: command,
+          approved_at: now,
+          updated_at: now,
+        };
+      }
+
+      return NextResponse.json({
+        success: true,
+        status: "approved",
+        action_type: "infra_command",
+        category: "infra",
+        executed_command: command,
+        message: "Command executed on target server",
+        approved_at: now,
+      });
+    }
+
+    // ------------------------------------------------------------------------
+    // SITUATION A: Code Issue -> GitHub Pull Request Automation
+    // ------------------------------------------------------------------------
     const branchName = action?.branch_name || `hotfix/inc-${id.slice(0, 8)}`;
     const filePath = action?.file_path || "src/server.ts";
     const prTitle = action?.pr_title || `fix: resolve incident ${incident.title}`;
     const prBody = action?.pr_body || `Remediation for incident ${id}`;
     const patchContent = action?.patch_content || "// Applied fix";
 
-    // 1. Trigger GitHub PR automation
     const prResult = await createGitHubPullRequest({
       branchName,
       filePath,
@@ -45,9 +93,6 @@ export async function POST(
       patchContent,
     });
 
-    const now = new Date().toISOString();
-
-    // 2. Update database record
     if (isServerSupabaseConfigured()) {
       await supabaseAdmin
         .from("incidents")
@@ -62,7 +107,6 @@ export async function POST(
         .eq("id", id);
     }
 
-    // Always update mock store too for fallback consistency
     const store = getMockStore();
     const idx = store.findIndex((item) => item.id === id);
     if (idx !== -1) {
@@ -80,6 +124,8 @@ export async function POST(
     return NextResponse.json({
       success: true,
       status: "approved",
+      action_type: "pull_request",
+      category: "code",
       pr_url: prResult.pr_url,
       pr_number: prResult.pr_number,
       pr_branch: prResult.branch,
@@ -89,9 +135,8 @@ export async function POST(
   } catch (error) {
     console.error("Failed to approve incident:", error);
     return NextResponse.json(
-      { error: "Failed to approve incident and trigger PR creation." },
+      { error: "Failed to approve incident and trigger remediation." },
       { status: 500 }
     );
   }
 }
-

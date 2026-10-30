@@ -18,6 +18,7 @@ import {
 
 interface PresetIncident {
   name: string;
+  category: "Code Issue (Coder AI)" | "Infra Issue (Infra AI)";
   service: string;
   environment: string;
   icon: typeof Flame;
@@ -27,27 +28,31 @@ interface PresetIncident {
 const PRESETS: PresetIncident[] = [
   {
     name: "Out of Memory (OOM)",
+    category: "Code Issue (Coder AI)",
     service: "auth-service",
     environment: "production",
     icon: Cpu,
     log: `FATAL ERROR: JavaScript heap out of memory at SessionStore.setSession (/app/dist/session.js:204:14)`,
   },
   {
-    name: "Database Deadlock",
-    service: "billing-service",
-    environment: "production",
-    icon: Database,
-    log: `ERROR: deadlock detected in Postgres ledger update at process 1402`,
-  },
-  {
     name: "Redis Server Saturated",
+    category: "Infra Issue (Infra AI)",
     service: "cache-layer",
     environment: "production",
     icon: Flame,
     log: `Error: Max clients reached on Redis pool after 30000ms`,
   },
   {
+    name: "Database Deadlock",
+    category: "Infra Issue (Infra AI)",
+    service: "billing-service",
+    environment: "production",
+    icon: Database,
+    log: `ERROR: deadlock detected in Postgres ledger update at process 1402`,
+  },
+  {
     name: "Missing Token Secret",
+    category: "Code Issue (Coder AI)",
     service: "api-gateway",
     environment: "production",
     icon: Key,
@@ -126,7 +131,7 @@ export function WebhookTester() {
   };
 
   return (
-    <div className="space-y-6 max-w-4xl">
+    <div className="space-y-6 w-full">
       {/* Webhook Endpoint Box */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm space-y-3">
         <h3 className="text-sm font-bold text-slate-900">Your Webhook URL</h3>
@@ -178,12 +183,21 @@ export function WebhookTester() {
                 <div className="p-2.5 rounded-xl bg-blue-50 text-blue-600 group-hover:scale-105 transition-transform">
                   <Icon className="w-4 h-4" />
                 </div>
-                <div>
-                  <div className="text-sm font-bold text-slate-800 group-hover:text-blue-600 transition-colors">
-                    {preset.name}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-1 mb-0.5">
+                    <span className="text-sm font-bold text-slate-800 group-hover:text-blue-600 transition-colors truncate">
+                      {preset.name}
+                    </span>
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 ${
+                      preset.category.includes("Infra") 
+                        ? "bg-amber-100 text-amber-800" 
+                        : "bg-blue-100 text-blue-800"
+                    }`}>
+                      {preset.category.includes("Infra") ? "Infra" : "Code"}
+                    </span>
                   </div>
                   <div className="text-xs text-slate-500 font-medium">
-                    {preset.service}
+                    {preset.service} • {preset.category}
                   </div>
                 </div>
               </button>

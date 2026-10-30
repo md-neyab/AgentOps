@@ -1,5 +1,14 @@
 import Groq from "groq-sdk";
-import { AIAnalysis, IncidentSeverity } from "./types";
+import { 
+  AIAnalysis, 
+  IncidentSeverity, 
+  AgentAlphaOutput, 
+  AgentBetaOutput, 
+  AgentGammaOutput, 
+  AgentInfraOutput,
+  MultiAgentWorkflow,
+  SuggestedAction 
+} from "./types";
 
 const apiKey = process.env.GROQ_API_KEY || "";
 const groqModel = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
@@ -14,162 +23,429 @@ function getGroqClient() {
   });
 }
 
-const SYSTEM_PROMPT = `You are AgentOps AI, a Principal Site Reliability Engineer (SRE) and Autonomous Incident Triage Specialist.
-Your mission is to perform instant root-cause analysis on incoming production error logs, stack traces, and crash dumps.
+// ============================================================================
+// AGENT 1: Triage & Alert Specialist (Agent Alpha)
+// ============================================================================
+const AGENT_ALPHA_PROMPT = `You are Agent Alpha, an autonomous Site Reliability Triage Specialist.
+Your job is anomaly detection, severity grading, and generating immediate alert telemetry.
 
-You MUST respond strictly with a valid JSON object matching the following structure:
+Analyze the error log and return ONLY a strict JSON object:
 {
-  "title": "Concise incident headline (e.g., 'Redis Connection Pool Exhaustion')",
   "severity": "critical" | "high" | "medium" | "low",
-  "root_cause": "Deep technical analysis explaining the precise mechanism of failure, affected file/line, and system breakdown.",
-  "executive_summary": "High-level summary suitable for engineering leadership explaining what happened and business impact.",
-  "confidence_score": 0.95,
-  "impact_score": 8.5,
-  "suggested_action": {
-    "action_type": "pull_request",
-    "file_path": "src/path/to/target/file.ts",
-    "branch_name": "hotfix/incident-short-slug",
-    "pr_title": "fix(service): concise conventional commit title",
-    "pr_body": "### Incident Summary\\nExplanation of the incident.\\n\\n### Root Cause\\nDetails of the defect.\\n\\n### Solution\\nDescription of the code patch.",
-    "patch_content": "@@ -10,3 +10,4 @@\\n-brokenCode()\\n+fixedCode()"
-  }
+  "root_cause": "Concise technical explanation of the failure mechanism and line/component failure.",
+  "needs_senior_escalation": boolean,
+  "simulated_slack_alert_text": "Formatted Slack alert: e.g., 🚨 *[P0-CRITICAL]* Auth Service OOM restart detected on us-east. Memory saturation breach. On-call paged.",
+  "anomaly_confidence": number (between 0.85 and 0.99)
 }
+Return only raw JSON.`;
 
-Severity Guidelines:
-- "critical": System-wide outage, OOM crash, data loss, kernel panic, security breach.
-- "high": Service degradation, DB connection pool exhausted, repeated 500s.
-- "medium": Background worker failure, deadlock caught by retry, memory leak warning.
-- "low": Deprecated header, transient 404 spike, minor performance jitter.
-
-Do not output any markdown formatting like \`\`\`json or trailing commentary. Return only the raw JSON object.`;
-
-export async function triageIncidentWithGroq(
+export async function runAgentAlpha_Triage(
   rawLog: string,
-  serviceName: string = "unknown-service",
-  environment: string = "production"
-): Promise<AIAnalysis> {
+  serviceName: string,
+  environment: string
+): Promise<AgentAlphaOutput> {
   if (!isGroqConfigured()) {
-    console.warn("GROQ_API_KEY is not configured. Utilizing high-fidelity autonomous heuristics fallback.");
-    return generateFallbackTriage(rawLog, serviceName, environment);
+    return generateFallbackAgentAlpha(rawLog, serviceName, environment);
   }
 
   try {
-    const userPrompt = `INCIDENT TELEMETRY PAYLOAD:
-Service: ${serviceName}
-Environment: ${environment}
-Raw Error Stacktrace / Logs:
-"""
-${rawLog}
-"""
-
-Analyze this incident and generate the strict JSON triage and code remediation action.`;
-
     const groq = getGroqClient();
-    const chatCompletion = await groq.chat.completions.create({
+    const res = await groq.chat.completions.create({
       messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userPrompt },
+        { role: "system", content: AGENT_ALPHA_PROMPT },
+        { 
+          role: "user", 
+          content: `Service: ${serviceName}\nEnvironment: ${environment}\nLog:\n"""\n${rawLog}\n"""` 
+        },
       ],
       model: groqModel,
       temperature: 0.1,
       response_format: { type: "json_object" },
     });
 
-    const content = chatCompletion.choices[0]?.message?.content || "";
-    const parsed = JSON.parse(content) as AIAnalysis;
+    const parsed = JSON.parse(res.choices[0]?.message?.content || "{}");
+    const validSeverities: IncidentSeverity[] = ["critical", "high", "medium", "low"];
+    const severity: IncidentSeverity = validSeverities.includes(parsed.severity) ? parsed.severity : "high";
 
-    // Validate and sanitize response
-    return sanitizeAIAnalysis(parsed, rawLog, serviceName);
+    return {
+      agent_name: "Agent Alpha (Triage & Alert)",
+      severity,
+      root_cause: parsed.root_cause || "Anomaly detected in server execution pipeline.",
+      needs_senior_escalation: Boolean(parsed.needs_senior_escalation ?? (severity === "critical")),
+      simulated_slack_alert_text: parsed.simulated_slack_alert_text || `⚠️ Alert: Incident detected on ${serviceName} (${environment})`,
+      anomaly_confidence: typeof parsed.anomaly_confidence === "number" ? parsed.anomaly_confidence : 0.96,
+    };
   } catch (err) {
-    console.error("Groq API triage failed:", err);
-    return generateFallbackTriage(rawLog, serviceName, environment);
+    console.error("Agent Alpha triage failed, using fallback:", err);
+    return generateFallbackAgentAlpha(rawLog, serviceName, environment);
   }
 }
 
-function sanitizeAIAnalysis(parsed: Partial<AIAnalysis>, rawLog: string, serviceName: string): AIAnalysis {
-  const severities: IncidentSeverity[] = ["critical", "high", "medium", "low"];
-  const severity: IncidentSeverity = severities.includes(parsed.severity as IncidentSeverity)
-    ? (parsed.severity as IncidentSeverity)
-    : "high";
+// ============================================================================
+// AGENT 2: Manager AI / Ops Coordinator (Agent Beta)
+// Dynamic Routing: Decides whether to dispatch to Coder AI or Infra AI
+// ============================================================================
+const AGENT_BETA_PROMPT = `You are Agent Beta, the Manager AI & Operations Coordinator.
+Your job is task assignment, priority grading, and ROUTING DECISION:
+Determine if this issue is:
+1. "coder_agent": Requires a source code bugfix/patch (e.g. memory leak, null pointer, syntax error, algorithmic defect).
+2. "infra_agent": Requires an infrastructure/server command (e.g. database pool exhaustion, deadlocked process termination, container/pod rollout restart, redis flush, daemon restart).
 
-  return {
-    title: parsed.title || `Incident detected in ${serviceName}`,
-    severity,
-    root_cause: parsed.root_cause || "Root cause identified via stack trace inspection.",
-    executive_summary: parsed.executive_summary || "An automated anomaly was detected and isolated.",
-    confidence_score: typeof parsed.confidence_score === "number" ? parsed.confidence_score : 0.92,
-    impact_score: typeof parsed.impact_score === "number" ? parsed.impact_score : 7.5,
-    suggested_action: {
-      action_type: parsed.suggested_action?.action_type || "pull_request",
-      file_path: parsed.suggested_action?.file_path || `src/${serviceName}/handler.ts`,
-      branch_name: parsed.suggested_action?.branch_name || `hotfix/inc-${Date.now().toString(36)}`,
-      pr_title: parsed.suggested_action?.pr_title || `fix(${serviceName}): address unhandled exception`,
-      pr_body: parsed.suggested_action?.pr_body || "Automated hotfix generated by AgentOps AI.",
-      patch_content: parsed.suggested_action?.patch_content || "@@ -1,1 +1,2 @@\n+// Applied safety guard",
-    },
-  };
+Return ONLY a strict JSON object:
+{
+  "assigned_team": "Target squad name, e.g. 'Core Platform & SRE', 'Identity Squad', 'Payment Ops'",
+  "jira_ticket_title": "Formal Jira title: e.g. 'OPS-4921: Memory leak in session cache'",
+  "priority_level": "P0 - Blocker" | "P1 - High" | "P2 - Medium" | "P3 - Low",
+  "sla_target": "e.g. '15 minutes' or '1 hour'",
+  "routing_decision": "coder_agent" | "infra_agent",
+  "routing_reason": "One sentence explaining why it was routed to Coder AI or Infra AI."
 }
+Return only raw JSON.`;
 
-export function generateFallbackTriage(
+export async function runAgentBeta_OpsCoordinator(
   rawLog: string,
   serviceName: string,
-  environment: string
-): AIAnalysis {
-  const lower = rawLog.toLowerCase();
+  alphaTriage: AgentAlphaOutput
+): Promise<AgentBetaOutput> {
+  if (!isGroqConfigured()) {
+    return generateFallbackAgentBeta(rawLog, serviceName, alphaTriage);
+  }
 
-  if (lower.includes("heap") || lower.includes("out of memory") || lower.includes("oom")) {
+  try {
+    const groq = getGroqClient();
+    const res = await groq.chat.completions.create({
+      messages: [
+        { role: "system", content: AGENT_BETA_PROMPT },
+        { 
+          role: "user", 
+          content: `Service: ${serviceName}\nSeverity: ${alphaTriage.severity}\nRoot Cause: ${alphaTriage.root_cause}\nLog Trace:\n${rawLog}` 
+        },
+      ],
+      model: groqModel,
+      temperature: 0.1,
+      response_format: { type: "json_object" },
+    });
+
+    const parsed = JSON.parse(res.choices[0]?.message?.content || "{}");
+    const validPriorities = ["P0 - Blocker", "P1 - High", "P2 - Medium", "P3 - Low"] as const;
+    const priority_level = validPriorities.includes(parsed.priority_level) ? parsed.priority_level : "P1 - High";
+    const routing_decision = parsed.routing_decision === "infra_agent" ? "infra_agent" : "coder_agent";
+
     return {
-      title: `OOMKilled: Memory Heap Exhaustion in ${serviceName}`,
-      severity: "critical",
-      root_cause: `Unbounded memory allocation during high-volume request spikes in ${serviceName}. Objects are being retained in the global event listener pool without proper garbage collection eviction.`,
-      executive_summary: `Service ${serviceName} in ${environment} breached the container memory threshold (2GB limit) and was terminated by the Linux OOM killer.`,
-      confidence_score: 0.97,
-      impact_score: 9.6,
-      suggested_action: {
-        action_type: "pull_request",
-        file_path: `src/${serviceName}/session-cache.ts`,
-        branch_name: `hotfix/${serviceName}-oom-guard`,
-        pr_title: `fix(${serviceName}): introduce bounded LRU cache with automatic eviction`,
-        pr_body: `### Incident Summary\nMitigates fatal memory leak resulting in container OOM restart.\n\n### Root Cause\nGlobal cache Map allowed infinite entry accumulation.\n\n### Fix\nReplaced Map with LRUCache capped at 5000 items.`,
-        patch_content: `@@ -8,3 +8,5 @@\n-const cache = new Map();\n+import { LRUCache } from 'lru-cache';\n+const cache = new LRUCache({ max: 5000, ttl: 1000 * 60 * 10 });`,
-      },
+      agent_name: "Agent Beta (Manager AI & Ops Coordinator)",
+      assigned_team: parsed.assigned_team || `${serviceName} Engineering Squad`,
+      jira_ticket_title: parsed.jira_ticket_title || `OPS-${Math.floor(1000 + Math.random() * 9000)}: Investigate ${serviceName} incident`,
+      priority_level,
+      sla_target: parsed.sla_target || (alphaTriage.severity === "critical" ? "15 minutes" : "1 hour"),
+      routing_decision,
+      routing_reason: parsed.routing_reason || (routing_decision === "coder_agent" 
+        ? "Defect identified in application logic requiring a Git patch."
+        : "Operational saturation requiring infrastructure restart command."),
+    };
+  } catch (err) {
+    console.error("Agent Beta coordinator failed, using fallback:", err);
+    return generateFallbackAgentBeta(rawLog, serviceName, alphaTriage);
+  }
+}
+
+// ============================================================================
+// AGENT 3A: Coder AI (State A: Code Issue)
+// ============================================================================
+const AGENT_GAMMA_PROMPT = `You are Coder AI, an Autonomous Remediation Coder.
+Your job is to synthesize a precision Git patch diff for the code defect.
+
+Return ONLY a strict JSON object:
+{
+  "file_path": "Relative path of the target file to patch (e.g. 'src/auth/session.ts')",
+  "patch_content": "Unified diff with - and + markers solving the defect.",
+  "branch_name": "Slugified git branch name (e.g. 'hotfix/fix-session-leak')",
+  "commit_message": "Conventional commit message (e.g. 'fix(auth): add LRU cache to prevent heap OOM')"
+}
+Return only raw JSON.`;
+
+export async function runAgentGamma_RemediationCoder(
+  rawLog: string,
+  serviceName: string,
+  alphaTriage: AgentAlphaOutput,
+  betaOps: AgentBetaOutput
+): Promise<AgentGammaOutput> {
+  if (!isGroqConfigured()) {
+    return generateFallbackAgentGamma(rawLog, serviceName, alphaTriage);
+  }
+
+  try {
+    const groq = getGroqClient();
+    const res = await groq.chat.completions.create({
+      messages: [
+        { role: "system", content: AGENT_GAMMA_PROMPT },
+        { 
+          role: "user", 
+          content: `Service: ${serviceName}\nRoot Cause: ${alphaTriage.root_cause}\nTicket: ${betaOps.jira_ticket_title}\nLog:\n${rawLog}` 
+        },
+      ],
+      model: groqModel,
+      temperature: 0.1,
+      response_format: { type: "json_object" },
+    });
+
+    const parsed = JSON.parse(res.choices[0]?.message?.content || "{}");
+    const cleanBranch = (parsed.branch_name || `hotfix/${serviceName}-patch`).replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase();
+
+    return {
+      agent_name: "Coder AI (Remediation Coder)",
+      file_path: parsed.file_path || `src/${serviceName}/handler.ts`,
+      patch_content: parsed.patch_content || `@@ -1,2 +1,3 @@\n-// Guard added by Coder AI\n+// Guard applied`,
+      branch_name: cleanBranch,
+      commit_message: parsed.commit_message || `fix(${serviceName}): address unhandled exception`,
+    };
+  } catch (err) {
+    console.error("Coder AI failed, using fallback:", err);
+    return generateFallbackAgentGamma(rawLog, serviceName, alphaTriage);
+  }
+}
+
+// ============================================================================
+// AGENT 3B: Infra AI (State B: Server/Config Issue)
+// ============================================================================
+const AGENT_INFRA_PROMPT = `You are Infra AI, an Autonomous Site Reliability & Cloud Infrastructure Engineer.
+Your job is to provide the exact terminal execution command to mitigate a server, container, or database infrastructure failure.
+
+Return ONLY a strict JSON object:
+{
+  "terminal_command": "Executable CLI command (e.g. 'kubectl rollout restart deployment/auth-service -n production' or 'pm2 restart all' or 'systemctl restart redis')",
+  "target_environment": "Environment name, e.g. 'production' or 'production-us-east'",
+  "estimated_impact": "Plain English impact: e.g. 'Zero-downtime rolling restart of 3 container pods. Restores socket capacity.'",
+  "rollback_command": "e.g. 'kubectl rollout undo deployment/auth-service -n production'"
+}
+Return only raw JSON.`;
+
+export async function runAgentInfra_OpsRemediation(
+  rawLog: string,
+  serviceName: string,
+  environment: string,
+  alphaTriage: AgentAlphaOutput,
+  betaOps: AgentBetaOutput
+): Promise<AgentInfraOutput> {
+  if (!isGroqConfigured()) {
+    return generateFallbackAgentInfra(rawLog, serviceName, environment);
+  }
+
+  try {
+    const groq = getGroqClient();
+    const res = await groq.chat.completions.create({
+      messages: [
+        { role: "system", content: AGENT_INFRA_PROMPT },
+        { 
+          role: "user", 
+          content: `Service: ${serviceName}\nEnvironment: ${environment}\nRoot Cause: ${alphaTriage.root_cause}\nTicket: ${betaOps.jira_ticket_title}\nLog:\n${rawLog}` 
+        },
+      ],
+      model: groqModel,
+      temperature: 0.1,
+      response_format: { type: "json_object" },
+    });
+
+    const parsed = JSON.parse(res.choices[0]?.message?.content || "{}");
+
+    return {
+      agent_name: "Infra AI (Server Operations)",
+      terminal_command: parsed.terminal_command || `kubectl rollout restart deployment/${serviceName} -n ${environment}`,
+      target_environment: parsed.target_environment || environment,
+      estimated_impact: parsed.estimated_impact || "Graceful rolling restart of service containers. Clears deadlocks and connection leaks.",
+      rollback_command: parsed.rollback_command,
+    };
+  } catch (err) {
+    console.error("Infra AI failed, using fallback:", err);
+    return generateFallbackAgentInfra(rawLog, serviceName, environment);
+  }
+}
+
+// ============================================================================
+// Multi-Agent Orchestrator Pipeline
+// ============================================================================
+export async function orchestrateMultiAgentPipeline(
+  rawLog: string,
+  serviceName: string = "unknown-service",
+  environment: string = "production"
+): Promise<{ aiAnalysis: AIAnalysis; workflow: MultiAgentWorkflow }> {
+  const startTime = Date.now();
+
+  // 1. Run Agent Alpha (Triage & Anomaly Assessment)
+  const triageAgent = await runAgentAlpha_Triage(rawLog, serviceName, environment);
+
+  // 2. Run Agent Beta (Manager AI): Decides Coder AI vs Infra AI
+  const opsAgent = await runAgentBeta_OpsCoordinator(rawLog, serviceName, triageAgent);
+
+  let coderAgent: AgentGammaOutput | null = null;
+  let infraAgent: AgentInfraOutput | null = null;
+  let suggestedAction: SuggestedAction;
+
+  if (opsAgent.routing_decision === "infra_agent") {
+    // STATE B: Route to Infra AI
+    infraAgent = await runAgentInfra_OpsRemediation(rawLog, serviceName, environment, triageAgent, opsAgent);
+    suggestedAction = {
+      action_type: "infra_command",
+      category: "infra",
+      terminal_command: infraAgent.terminal_command,
+      target_environment: infraAgent.target_environment,
+      estimated_impact: infraAgent.estimated_impact,
+    };
+  } else {
+    // STATE A: Route to Coder AI
+    coderAgent = await runAgentGamma_RemediationCoder(rawLog, serviceName, triageAgent, opsAgent);
+    suggestedAction = {
+      action_type: "pull_request",
+      category: "code",
+      file_path: coderAgent.file_path,
+      branch_name: coderAgent.branch_name,
+      pr_title: coderAgent.commit_message,
+      pr_body: `### Incident Summary\n${triageAgent.root_cause}\n\n### Task Assignment\n- **Assigned Squad:** ${opsAgent.assigned_team}\n- **Jira Reference:** ${opsAgent.jira_ticket_title}\n- **SLA Window:** ${opsAgent.sla_target}\n\n### Remediation\nPatch generated autonomously by **Coder AI**.`,
+      patch_content: coderAgent.patch_content,
     };
   }
 
-  if (lower.includes("timeout") || lower.includes("econnrefused") || lower.includes("connection pool")) {
+  const durationMs = Date.now() - startTime;
+
+  const workflow: MultiAgentWorkflow = {
+    triage_agent: triageAgent,
+    ops_agent: opsAgent,
+    coder_agent: coderAgent,
+    infra_agent: infraAgent,
+    orchestrated_at: new Date().toISOString(),
+    total_duration_ms: durationMs,
+  };
+
+  const aiAnalysis: AIAnalysis = {
+    title: opsAgent.jira_ticket_title || `Incident detected in ${serviceName}`,
+    severity: triageAgent.severity,
+    root_cause: triageAgent.root_cause,
+    executive_summary: `${triageAgent.root_cause} Routed by Manager AI to ${opsAgent.routing_decision === "infra_agent" ? "Infra AI" : "Coder AI"}.`,
+    confidence_score: triageAgent.anomaly_confidence,
+    impact_score: triageAgent.severity === "critical" ? 9.5 : triageAgent.severity === "high" ? 8.0 : 6.0,
+    suggested_action: suggestedAction,
+    multi_agent_workflow: workflow,
+  };
+
+  return { aiAnalysis, workflow };
+}
+
+// Backward compatible helper
+export async function triageIncidentWithGroq(
+  rawLog: string,
+  serviceName: string = "unknown-service",
+  environment: string = "production"
+): Promise<AIAnalysis> {
+  const { aiAnalysis } = await orchestrateMultiAgentPipeline(rawLog, serviceName, environment);
+  return aiAnalysis;
+}
+
+// ============================================================================
+// High-Fidelity Fallback Generators
+// ============================================================================
+function generateFallbackAgentAlpha(rawLog: string, serviceName: string, environment: string): AgentAlphaOutput {
+  const lower = rawLog.toLowerCase();
+  const isOOM = lower.includes("heap") || lower.includes("out of memory") || lower.includes("oom");
+  const isTimeout = lower.includes("timeout") || lower.includes("connection pool") || lower.includes("econnrefused") || lower.includes("deadlock");
+
+  if (isOOM) {
     return {
-      title: `Connection Saturation & Socket Timeout in ${serviceName}`,
+      agent_name: "Agent Alpha (Triage & Alert)",
+      severity: "critical",
+      root_cause: `Fatal heap memory exhaustion in ${serviceName}. In-memory collections accumulated objects without cache eviction, triggering Linux OOM kill.`,
+      needs_senior_escalation: true,
+      simulated_slack_alert_text: `🚨 *[P0-CRITICAL]* Anomaly in \`${serviceName}\` (${environment}): Fatal OOM heap limit breach. Container restarted. Escalating to Senior On-Call.`,
+      anomaly_confidence: 0.98,
+    };
+  }
+
+  if (isTimeout) {
+    return {
+      agent_name: "Agent Alpha (Triage & Alert)",
       severity: "high",
-      root_cause: `Exhaustion of available connection pool handles. Downstream service latency exceeded the 5000ms threshold without releasing acquired sockets back to the client pool.`,
-      executive_summary: `Upstream traffic spike caused database connection pool starvation in ${environment}.`,
-      confidence_score: 0.94,
-      impact_score: 8.3,
-      suggested_action: {
-        action_type: "pull_request",
-        file_path: `src/${serviceName}/database.ts`,
-        branch_name: `hotfix/${serviceName}-pool-tuning`,
-        pr_title: `fix(${serviceName}): adjust connection pool max size and enforce idle timeouts`,
-        pr_body: `### Incident Summary\nPrevents connection exhaustion under high traffic load.\n\n### Fix\nIncreases pool size to 50 and adds connection acquisition timeout.`,
-        patch_content: `@@ -15,3 +15,5 @@\n-const pool = new Pool({ max: 10 });\n+const pool = new Pool({ max: 50, connectionTimeoutMillis: 3000, idleTimeoutMillis: 10000 });`,
-      },
+      root_cause: `Connection pool handle starvation or lock collision in ${serviceName}. Sockets remained occupied past the 5000ms threshold under burst traffic.`,
+      needs_senior_escalation: false,
+      simulated_slack_alert_text: `⚠️ *[P1-HIGH]* Database connection timeout spike in \`${serviceName}\` (${environment}). Connection pool capacity reached 100%.`,
+      anomaly_confidence: 0.94,
     };
   }
 
   return {
-    title: `Unhandled Runtime Exception in ${serviceName}`,
-    severity: "high",
-    root_cause: `Null pointer dereference or missing nullability check in request pipeline. Caught unhandled exception during parameter unpacking.`,
-    executive_summary: `An unhandled exception caused 500 status spikes in ${serviceName} on ${environment}.`,
-    confidence_score: 0.91,
-    impact_score: 7.4,
-    suggested_action: {
-      action_type: "pull_request",
-      file_path: `src/${serviceName}/controller.ts`,
-      branch_name: `hotfix/${serviceName}-null-check`,
-      pr_title: `fix(${serviceName}): add optional chaining and defensive parameter fallback`,
-      pr_body: `### Incident Summary\nPrevents crash when incoming payload attributes are undefined.\n\n### Fix\nAdds optional chaining operator to access nested properties safely.`,
-      patch_content: `@@ -28,2 +28,2 @@\n-const token = req.headers.authorization.split(' ')[1];\n+const token = req.headers?.authorization?.split(' ')?.[1] || null;`,
-    },
+    agent_name: "Agent Alpha (Triage & Alert)",
+    severity: "medium",
+    root_cause: `Unhandled runtime exception in ${serviceName}. Unexpected null parameter during request transformation.`,
+    needs_senior_escalation: false,
+    simulated_slack_alert_text: `🔔 *[P2-MEDIUM]* Unhandled exception spike in \`${serviceName}\` (${environment}). Safe fallback active.`,
+    anomaly_confidence: 0.91,
   };
 }
 
+function generateFallbackAgentBeta(rawLog: string, serviceName: string, alpha: AgentAlphaOutput): AgentBetaOutput {
+  const lower = rawLog.toLowerCase();
+  const isInfra = lower.includes("connection pool") || lower.includes("deadlock") || lower.includes("redis") || lower.includes("port") || lower.includes("econnrefused");
+
+  if (isInfra) {
+    return {
+      agent_name: "Agent Beta (Manager AI & Ops Coordinator)",
+      assigned_team: "Cloud Infrastructure & Database SRE",
+      jira_ticket_title: `OPS-${Math.floor(2000 + Math.random() * 5000)}: Infrastructure connection starvation in ${serviceName}`,
+      priority_level: "P1 - High",
+      sla_target: "30 minutes",
+      routing_decision: "infra_agent",
+      routing_reason: "Issue stems from database/cache connection exhaustion requiring an immediate operational restart command.",
+    };
+  }
+
+  return {
+    agent_name: "Agent Beta (Manager AI & Ops Coordinator)",
+    assigned_team: "Platform Core Application Squad",
+    jira_ticket_title: `OPS-${Math.floor(2000 + Math.random() * 5000)}: Application memory leak in ${serviceName}`,
+    priority_level: alpha.severity === "critical" ? "P0 - Blocker" : "P1 - High",
+    sla_target: "15 minutes",
+    routing_decision: "coder_agent",
+    routing_reason: "Issue stems from unevicted in-memory session arrays requiring a source code patch.",
+  };
+}
+
+function generateFallbackAgentGamma(rawLog: string, serviceName: string, alpha: AgentAlphaOutput): AgentGammaOutput {
+  return {
+    agent_name: "Coder AI (Remediation Coder)",
+    file_path: `src/${serviceName}/session-cache.ts`,
+    branch_name: `hotfix/${serviceName}-oom-lru`,
+    commit_message: `fix(${serviceName}): replace unbounded session store with LRU cache`,
+    patch_content: `@@ -12,3 +12,5 @@\n-const activeSessions: Session[] = [];\n+import { LRUCache } from 'lru-cache';\n+const activeSessions = new LRUCache({ max: 5000, ttl: 1000 * 60 * 15 });`,
+  };
+}
+
+function generateFallbackAgentInfra(rawLog: string, serviceName: string, environment: string): AgentInfraOutput {
+  const lower = rawLog.toLowerCase();
+  const isDeadlock = lower.includes("deadlock");
+  const isRedis = lower.includes("redis");
+
+  if (isDeadlock) {
+    return {
+      agent_name: "Infra AI (Server Operations)",
+      terminal_command: `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state = 'active' AND wait_event_type = 'Lock';`,
+      target_environment: environment,
+      estimated_impact: "Terminates blocking transactions immediately. Releases exclusive table locks and restores database throughput.",
+      rollback_command: "N/A - Rollback handled by PostgreSQL engine abort",
+    };
+  }
+
+  if (isRedis) {
+    return {
+      agent_name: "Infra AI (Server Operations)",
+      terminal_command: `kubectl rollout restart deployment/cache-layer -n ${environment}`,
+      target_environment: environment,
+      estimated_impact: "Rolling restart of 3 Redis cache proxy pods. Closes 10,000 idle client sockets and re-initializes connection pools.",
+      rollback_command: `kubectl rollout undo deployment/cache-layer -n ${environment}`,
+    };
+  }
+
+  return {
+    agent_name: "Infra AI (Server Operations)",
+    terminal_command: `kubectl rollout restart deployment/${serviceName} -n ${environment}`,
+    target_environment: environment,
+    estimated_impact: "Graceful rolling restart of container pods. Restores memory limits and clears unreleased file descriptors.",
+    rollback_command: `kubectl rollout undo deployment/${serviceName} -n ${environment}`,
+  };
+}

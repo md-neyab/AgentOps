@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { 
@@ -7,11 +8,17 @@ import {
   Settings, 
   BarChart2, 
   Sparkles,
-  CheckCircle2
+  Loader2
 } from "lucide-react";
 
 export function Sidebar() {
   const pathname = usePathname();
+  const [loadingHref, setLoadingHref] = useState<string | null>(null);
+
+  // When pathname changes, navigation is complete, remove loader
+  useEffect(() => {
+    setLoadingHref(null);
+  }, [pathname]);
 
   const navItems = [
     {
@@ -31,13 +38,27 @@ export function Sidebar() {
     },
   ];
 
+  const handleClick = (href: string) => {
+    if (pathname !== href) {
+      setLoadingHref(href);
+    }
+  };
+
   return (
     <aside className="w-64 bg-white border-r border-slate-200 flex flex-col h-screen fixed left-0 top-0 z-40 select-none">
       {/* Brand Header */}
       <div className="p-6 border-b border-slate-100">
-        <Link href="/" className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-2xl bg-blue-600 flex items-center justify-center shadow-md shadow-blue-500/20 text-white">
-            <Sparkles className="w-5 h-5" />
+        <Link 
+          href="/" 
+          onClick={() => handleClick("/")}
+          className="flex items-center gap-3 group"
+        >
+          <div className="w-10 h-10 rounded-2xl bg-blue-600 flex items-center justify-center shadow-md shadow-blue-500/20 text-white group-hover:scale-105 transition-transform">
+            {loadingHref === "/" ? (
+              <Loader2 className="w-5 h-5 animate-spin text-white" />
+            ) : (
+              <Sparkles className="w-5 h-5" />
+            )}
           </div>
           <div>
             <span className="font-bold text-slate-900 text-lg tracking-tight">
@@ -52,18 +73,25 @@ export function Sidebar() {
       <nav className="flex-1 px-4 py-6 space-y-1.5">
         {navItems.map((item) => {
           const isActive = pathname === item.href;
+          const isLoading = loadingHref === item.href;
           const Icon = item.icon;
+
           return (
             <Link
               key={item.href}
               href={item.href}
+              onClick={() => handleClick(item.href)}
               className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all ${
                 isActive
                   ? "bg-blue-50 text-blue-600 shadow-sm"
                   : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
               }`}
             >
-              <Icon className={`w-5 h-5 ${isActive ? "text-blue-600" : "text-slate-400"}`} />
+              {isLoading ? (
+                <Loader2 className="w-5 h-5 animate-spin text-blue-600 shrink-0" />
+              ) : (
+                <Icon className={`w-5 h-5 ${isActive ? "text-blue-600" : "text-slate-400"} shrink-0`} />
+              )}
               <span>{item.name}</span>
             </Link>
           );

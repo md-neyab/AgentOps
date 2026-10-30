@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { TerminalViewer } from "@/components/terminal-viewer";
-import { AIRemediationCard } from "@/components/ai-remediation-card";
+import { MultiAgentStepper } from "@/components/multi-agent-stepper";
 import { ApprovalDock } from "@/components/approval-dock";
 import { isServerSupabaseConfigured, supabaseAdmin, getMockStore } from "@/lib/supabase/server";
 import { Incident } from "@/lib/types";
@@ -65,7 +65,7 @@ export default async function IncidentDetailPage({
   };
 
   return (
-    <div className="p-8 space-y-6 max-w-6xl flex flex-col min-h-screen">
+    <div className="p-8 space-y-6 max-w-6xl mx-auto w-full flex flex-col min-h-screen">
       {/* Top Navigation */}
       <div>
         <Link
@@ -94,9 +94,9 @@ export default async function IncidentDetailPage({
       </div>
 
       {/* Split View */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 flex-1 min-h-[500px]">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 flex-1 min-h-[600px]">
         {/* Left Side: Original Log */}
-        <div className="h-[500px] lg:h-auto">
+        <div className="h-[600px] lg:h-auto">
           <TerminalViewer
             rawLog={incident.raw_log}
             serviceName={incident.service_name}
@@ -105,11 +105,12 @@ export default async function IncidentDetailPage({
           />
         </div>
 
-        {/* Right Side: AI Suggested Solution */}
-        <div className="h-[500px] lg:h-auto">
-          <AIRemediationCard
+        {/* Right Side: Multi-Agent Orchestration Stepper */}
+        <div className="h-[600px] lg:h-auto">
+          <MultiAgentStepper
             analysis={incident.ai_analysis}
             suggestedAction={incident.suggested_action}
+            workflow={incident.multi_agent_workflow || incident.ai_analysis?.multi_agent_workflow}
           />
         </div>
       </div>

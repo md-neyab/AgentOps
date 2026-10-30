@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { triageIncidentWithGroq } from "@/lib/groq";
+import { orchestrateMultiAgentPipeline } from "@/lib/groq";
 import { isServerSupabaseConfigured, supabaseAdmin, getMockStore } from "@/lib/supabase/server";
 import { Incident } from "@/lib/types";
 
@@ -15,8 +15,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 1. Run ultra-fast Groq Llama-3 AI triage
-    const aiAnalysis = await triageIncidentWithGroq(raw_log, service, environment);
+    // 1. Run 3-Agent Groq Orchestration Pipeline
+    const { aiAnalysis, workflow } = await orchestrateMultiAgentPipeline(raw_log, service, environment);
 
     // 2. Prepare Incident Record
     const incidentData: Partial<Incident> = {
@@ -28,6 +28,7 @@ export async function POST(req: NextRequest) {
       status: "pending",
       ai_analysis: aiAnalysis,
       suggested_action: aiAnalysis.suggested_action,
+      multi_agent_workflow: workflow,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -70,7 +71,15 @@ export async function POST(req: NextRequest) {
         status: "pending",
         triage_status: "completed",
         ai_summary: aiAnalysis.executive_summary,
-        message: "Incident successfully ingested and analyzed via Groq Llama-3.",
+        workflow: {
+          triage_agent: workflow.triage_agent.agent_name,
+          ops_agent: workflow.ops_agent.agent_name,
+          coder_agent: workflow.coder_agent?.agent_name || null,
+          infra_agent: workflow.infra_agent?.agent_name || null,
+          routing_decision: workflow.ops_agent.routing_decision,
+          duration_ms: workflow.total_duration_ms,
+        },
+        message: "Incident triaged and orchestrated across 3 specialized AI agents.",
       },
       { status: 201 }
     );

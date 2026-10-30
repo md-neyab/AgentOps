@@ -19,6 +19,9 @@ declare global {
 }
 
 export const initialSeedIncidents: Incident[] = [
+  // --------------------------------------------------------------------------
+  // STATE A: Code Issue -> Coder AI (Git Patch)
+  // --------------------------------------------------------------------------
   {
     id: "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
     title: "OOMKilled: JavaScript heap out of memory",
@@ -46,6 +49,7 @@ FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaS
       impact_score: 9.4,
       suggested_action: {
         action_type: "pull_request",
+        category: "code",
         file_path: "src/auth/session.ts",
         branch_name: "hotfix/inc-8942-oom",
         pr_title: "fix(auth): replace unbounded array with LRU cache for active sessions",
@@ -58,14 +62,46 @@ FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaS
     },
     suggested_action: {
       action_type: "pull_request",
+      category: "code",
       file_path: "src/auth/session.ts",
       branch_name: "hotfix/inc-8942-oom",
       pr_title: "fix(auth): replace unbounded array with LRU cache for active sessions",
-      pr_body: "### Incident Summary\nResolved critical OOM condition caused by unbounded session growth.\n\n### Changes\nReplaced array with LRUCache with 5000 item capacity and 15min TTL.",
+      pr_body: "### Incident Summary\nResolved critical OOM condition caused by unbounded session growth.\n\n### Root Cause\n`activeSessions` array accumulated active tokens indefinitely without eviction.\n\n### Changes\nReplaced array with LRUCache with 5000 item capacity and 15min TTL.",
       patch_content: `@@ -12,3 +12,5 @@
 -const activeSessions: Session[] = [];
 +import { LRUCache } from 'lru-cache';
 +const activeSessions = new LRUCache<string, Session>({ max: 5000, ttl: 1000 * 60 * 15 });`,
+    },
+    multi_agent_workflow: {
+      triage_agent: {
+        agent_name: "Agent Alpha (Triage & Alert)",
+        severity: "critical",
+        root_cause: "Unbounded array accumulation in user session handler causing rapid heap memory exhaustion during high concurrency token refresh requests.",
+        needs_senior_escalation: true,
+        simulated_slack_alert_text: "🚨 *[P0-CRITICAL]* Anomaly in `auth-service` (production-us-east): Fatal OOM heap limit breach. Container restarted. Escalating to Senior On-Call.",
+        anomaly_confidence: 0.98,
+      },
+      ops_agent: {
+        agent_name: "Agent Beta (Manager AI & Ops Coordinator)",
+        assigned_team: "Platform Core / SRE Squad",
+        jira_ticket_title: "OPS-8942: Critical Heap Memory Saturation in Auth Gateway",
+        priority_level: "P0 - Blocker",
+        sla_target: "15 minutes",
+        routing_decision: "coder_agent",
+        routing_reason: "Issue stems from unevicted in-memory session arrays requiring a source code patch.",
+      },
+      coder_agent: {
+        agent_name: "Coder AI (Remediation Coder)",
+        file_path: "src/auth/session.ts",
+        branch_name: "hotfix/inc-8942-oom",
+        commit_message: "fix(auth): replace unbounded array with LRU cache for active sessions",
+        patch_content: `@@ -12,3 +12,5 @@
+-const activeSessions: Session[] = [];
++import { LRUCache } from 'lru-cache';
++const activeSessions = new LRUCache<string, Session>({ max: 5000, ttl: 1000 * 60 * 15 });`,
+      },
+      orchestrated_at: new Date(Date.now() - 1000 * 60 * 4).toISOString(),
+      total_duration_ms: 1140,
     },
     pr_url: null,
     pr_number: null,
@@ -75,6 +111,10 @@ FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaS
     approved_at: null,
     rejected_at: null,
   },
+
+  // --------------------------------------------------------------------------
+  // STATE B: Infra Issue -> Infra AI (Terminal Command)
+  // --------------------------------------------------------------------------
   {
     id: "e4a77e52-19e0-47b8-8c01-7fa1743f11d1",
     title: "Redis Connection Pool Exhaustion",
@@ -94,31 +134,47 @@ FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaS
       confidence_score: 0.95,
       impact_score: 8.2,
       suggested_action: {
-        action_type: "pull_request",
-        file_path: "src/config/redis.ts",
-        branch_name: "hotfix/redis-pool-leak",
-        pr_title: "fix(cache): enable socket timeout and idle client eviction in ioredis config",
-        pr_body: "### Incident Resolution\nConfigures connection pooling with 5s max idle timeout.",
-        patch_content: `@@ -22,2 +22,4 @@
--const redis = new Redis(process.env.REDIS_URL);
-+const redis = new Redis(process.env.REDIS_URL, {
-+  maxRetriesPerRequest: 3,
-+  connectTimeout: 5000,
-+});`,
+        action_type: "infra_command",
+        category: "infra",
+        terminal_command: "kubectl rollout restart deployment/cache-layer -n production-eu-west",
+        target_environment: "production-eu-west",
+        estimated_impact: "Rolling restart of 3 Redis cache proxy pods. Closes 10,000 idle client sockets and re-initializes connection pools with zero downtime.",
       },
     },
     suggested_action: {
-      action_type: "pull_request",
-      file_path: "src/config/redis.ts",
-      branch_name: "hotfix/redis-pool-leak",
-      pr_title: "fix(cache): enable socket timeout and idle client eviction in ioredis config",
-      pr_body: "### Incident Resolution\nConfigures connection pooling with 5s max idle timeout.",
-      patch_content: `@@ -22,2 +22,4 @@
--const redis = new Redis(process.env.REDIS_URL);
-+const redis = new Redis(process.env.REDIS_URL, {
-+  maxRetriesPerRequest: 3,
-+  connectTimeout: 5000,
-+});`,
+      action_type: "infra_command",
+      category: "infra",
+      terminal_command: "kubectl rollout restart deployment/cache-layer -n production-eu-west",
+      target_environment: "production-eu-west",
+      estimated_impact: "Rolling restart of 3 Redis cache proxy pods. Closes 10,000 idle client sockets and re-initializes connection pools with zero downtime.",
+    },
+    multi_agent_workflow: {
+      triage_agent: {
+        agent_name: "Agent Alpha (Triage & Alert)",
+        severity: "high",
+        root_cause: "Connection pool is not releasing idle sockets during failed keep-alive handshakes, exhausting the 10,000 maxclient ceiling.",
+        needs_senior_escalation: false,
+        simulated_slack_alert_text: "⚠️ *[P1-HIGH]* Redis connection pool saturation on cache-layer (production-eu-west). Sockets unreleased.",
+        anomaly_confidence: 0.95,
+      },
+      ops_agent: {
+        agent_name: "Agent Beta (Manager AI & Ops Coordinator)",
+        assigned_team: "Cloud Infrastructure & Database SRE",
+        jira_ticket_title: "OPS-7721: Redis connection handle leak and socket starvation",
+        priority_level: "P1 - High",
+        sla_target: "30 minutes",
+        routing_decision: "infra_agent",
+        routing_reason: "Issue stems from database/cache connection exhaustion requiring an immediate operational restart command.",
+      },
+      infra_agent: {
+        agent_name: "Infra AI (Server Operations)",
+        terminal_command: "kubectl rollout restart deployment/cache-layer -n production-eu-west",
+        target_environment: "production-eu-west",
+        estimated_impact: "Rolling restart of 3 Redis cache proxy pods. Closes 10,000 idle client sockets and re-initializes connection pools with zero downtime.",
+        rollback_command: "kubectl rollout undo deployment/cache-layer -n production-eu-west",
+      },
+      orchestrated_at: new Date(Date.now() - 1000 * 60 * 25).toISOString(),
+      total_duration_ms: 1080,
     },
     pr_url: null,
     pr_number: null,
@@ -128,6 +184,10 @@ FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaS
     approved_at: null,
     rejected_at: null,
   },
+
+  // --------------------------------------------------------------------------
+  // STATE A (Approved): Code Issue -> Coder AI
+  // --------------------------------------------------------------------------
   {
     id: "f83a612c-90b1-4f12-9c32-b883011e4f90",
     title: "PostgreSQL Deadlock Detected in Order Settlement",
@@ -149,6 +209,7 @@ LOCATION: DeadLockReport, deadlock.c:1140`,
       impact_score: 6.8,
       suggested_action: {
         action_type: "pull_request",
+        category: "code",
         file_path: "src/billing/ledger.ts",
         branch_name: "hotfix/order-deadlock-sort",
         pr_title: "fix(billing): enforce deterministic row sorting prior to SELECT FOR UPDATE",
@@ -161,6 +222,7 @@ LOCATION: DeadLockReport, deadlock.c:1140`,
     },
     suggested_action: {
       action_type: "pull_request",
+      category: "code",
       file_path: "src/billing/ledger.ts",
       branch_name: "hotfix/order-deadlock-sort",
       pr_title: "fix(billing): enforce deterministic row sorting prior to SELECT FOR UPDATE",
@@ -170,9 +232,40 @@ LOCATION: DeadLockReport, deadlock.c:1140`,
 +const [first, second] = [accA, accB].sort();
 +const rows = await db.query('SELECT * FROM accounts WHERE id IN ($1, $2) ORDER BY id FOR UPDATE', [first, second]);`,
     },
-    pr_url: "https://github.com/enterprise-org/billing-service/pull/104",
-    pr_number: 104,
-    pr_branch: "hotfix/order-deadlock-sort",
+    multi_agent_workflow: {
+      triage_agent: {
+        agent_name: "Agent Alpha (Triage & Alert)",
+        severity: "medium",
+        root_cause: "Asymmetric acquisition order of ledger rows between checkout settlement and webhook refund handlers.",
+        needs_senior_escalation: false,
+        simulated_slack_alert_text: "🔔 *[P2-MEDIUM]* Postgres transaction deadlock detected on `billing-service`. Retries triggered.",
+        anomaly_confidence: 0.96,
+      },
+      ops_agent: {
+        agent_name: "Agent Beta (Manager AI & Ops Coordinator)",
+        assigned_team: "Payments & Ledger Squad",
+        jira_ticket_title: "OPS-9182: Concurrent lock collision in checkout settlement",
+        priority_level: "P2 - Medium",
+        sla_target: "2 hours",
+        routing_decision: "coder_agent",
+        routing_reason: "Issue stems from unevicted in-memory session arrays requiring a source code patch.",
+      },
+      coder_agent: {
+        agent_name: "Coder AI (Remediation Coder)",
+        file_path: "src/billing/ledger.ts",
+        branch_name: "hotfix/order-deadlock-sort",
+        commit_message: "fix(billing): enforce deterministic row sorting prior to SELECT FOR UPDATE",
+        patch_content: `@@ -44,3 +44,3 @@
+-const rows = await db.query('SELECT * FROM accounts WHERE id IN ($1, $2) FOR UPDATE', [accA, accB]);
++const [first, second] = [accA, accB].sort();
++const rows = await db.query('SELECT * FROM accounts WHERE id IN ($1, $2) ORDER BY id FOR UPDATE', [first, second]);`,
+      },
+      orchestrated_at: new Date(Date.now() - 1000 * 60 * 120).toISOString(),
+      total_duration_ms: 990,
+    },
+    pr_url: "https://github.com/md-neyab/AgentOps/pull/3",
+    pr_number: 3,
+    pr_branch: "hotfix-payment-gateway-pool-tuning-mvv39ly8",
     created_at: new Date(Date.now() - 1000 * 60 * 120).toISOString(),
     updated_at: new Date(Date.now() - 1000 * 60 * 60).toISOString(),
     approved_at: new Date(Date.now() - 1000 * 60 * 60).toISOString(),
@@ -190,4 +283,3 @@ export const getMockStore = () => {
   }
   return global.__mockIncidentsStore;
 };
-

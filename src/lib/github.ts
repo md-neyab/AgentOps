@@ -5,6 +5,28 @@ export interface GitHubPRResult {
   simulated: boolean;
 }
 
+function cleanOwnerAndRepo(): { owner: string; repo: string } {
+  let rawOwner = (process.env.GITHUB_OWNER || "").trim();
+  let rawRepo = (process.env.GITHUB_REPO || "").trim();
+
+  // If GITHUB_REPO has full URL like https://github.com/md-neyab/AgentOps
+  if (rawRepo.includes("github.com/")) {
+    const parts = rawRepo.replace(/.*github\.com\//, "").split("/").filter(Boolean);
+    if (parts.length >= 2) {
+      rawOwner = parts[0];
+      rawRepo = parts[1];
+    } else if (parts.length === 1) {
+      rawRepo = parts[0];
+    }
+  }
+
+  // Clean trailing slashes or .git
+  rawOwner = rawOwner.replace(/^https?:\/\/github\.com\//, "").replace(/\/.*$/, "").trim() || "md-neyab";
+  rawRepo = rawRepo.replace(/\.git$/, "").replace(/^\/+|\/+$/g, "").trim() || "AgentOps";
+
+  return { owner: rawOwner, repo: rawRepo };
+}
+
 export async function createGitHubPullRequest({
   branchName,
   filePath,
@@ -18,44 +40,63 @@ export async function createGitHubPullRequest({
   prBody: string;
   patchContent: string;
 }): Promise<GitHubPRResult> {
-  const token = process.env.GITHUB_TOKEN;
-  const owner = process.env.GITHUB_OWNER || "enterprise-demo";
-  const repo = process.env.GITHUB_REPO || "auth-service";
+  const token = (process.env.GITHUB_TOKEN || "").trim();
+  const { owner, repo } = cleanOwnerAndRepo();
 
-  // Check if real token is provided
-  if (!token || token.trim() === "" || token.includes("placeholder")) {
-    console.info("GITHUB_TOKEN not detected or placeholder. Operating in simulated PR mode.");
-    const mockPrNumber = Math.floor(100 + Math.random() * 900);
+  if (!token || token.includes("placeholder")) {
+    console.warn("GITHUB_TOKEN not configured. Using simulated PR link.");
+    const mockNumber = Math.floor(100 + Math.random() * 900);
     return {
-      pr_url: `https://github.com/${owner}/${repo}/pull/${mockPrNumber}`,
-      pr_number: mockPrNumber,
+      pr_url: `https://github.com/${owner}/${repo}/pull/${mockNumber}`,
+      pr_number: mockNumber,
       branch: branchName,
       simulated: true,
     };
   }
 
-  try {
-    const headers = {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/vnd.github.v3+json",
-      "User-Agent": "AgentOps-AI-Assistant",
-      "Content-Type": "application/json",
-    };
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/vnd.github.v3+json",
+    "User-Agent": "AgentOps-AI-Copilot",
+    "Content-Type": "application/json",
+  };
 
-    // 1. Get default branch SHA (e.g. 'main')
-    const refRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/ref/heads/main`, {
+  try {
+    // 1. Get repository details to discover default branch
+    const repoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
       headers,
     });
 
+    if (!repoRes.ok) {
+      const errText = await repoRes.text();
+      throw new Error(`Failed to access repo ${owner}/${repo}: ${repoRes.status} ${errText}`);
+    }
+
+    const repoData = await repoRes.json();
+    const defaultBranch = repoData.default_branch || "main";
+
+    // 2. Get latest commit SHA on default branch
+    const refRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/git/ref/heads/${defaultBranch}`,
+      { headers }
+    );
+
     if (!refRes.ok) {
-      throw new Error(`Failed to fetch main branch ref: ${refRes.statusText}`);
+      const errText = await refRes.text();
+      throw new Error(`Failed to get ref for heads/${defaultBranch}: ${refRes.status} ${errText}`);
     }
 
     const refData = await refRes.json();
     const baseSha = refData.object.sha;
 
-    // 2. Create hotfix branch
-    const cleanBranch = branchName.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase();
+    // 3. Create unique hotfix branch
+    const timestampSuffix = Date.now().toString(36);
+    const cleanBranch = (
+      branchName.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase() +
+      "-" +
+      timestampSuffix
+    ).slice(0, 50);
+
     const createBranchRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/refs`, {
       method: "POST",
       headers,
@@ -65,35 +106,66 @@ export async function createGitHubPullRequest({
       }),
     });
 
-    // 3. Create or update file content in branch
+    if (!createBranchRes.ok) {
+      const errText = await createBranchRes.text();
+      throw new Error(`Failed to create branch ${cleanBranch}: ${createBranchRes.status} ${errText}`);
+    }
+
+    // 4. Check if file already exists in branch to provide SHA if updating
+    let fileSha: string | undefined = undefined;
+    try {
+      const existingFileRes = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}?ref=${cleanBranch}`,
+        { headers }
+      );
+      if (existingFileRes.ok) {
+        const existingData = await existingFileRes.json();
+        fileSha = existingData.sha;
+      }
+    } catch {
+      // New file, no SHA needed
+    }
+
+    // 5. Commit patch file
     const contentEncoded = Buffer.from(
       `// Auto-generated remediation patch by AgentOps AI\n// File: ${filePath}\n\n${patchContent}\n`
     ).toString("base64");
 
-    await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`, {
+    const commitBody: Record<string, unknown> = {
+      message: prTitle,
+      content: contentEncoded,
+      branch: cleanBranch,
+    };
+    if (fileSha) {
+      commitBody.sha = fileSha;
+    }
+
+    const putRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`, {
       method: "PUT",
       headers,
-      body: JSON.stringify({
-        message: prTitle,
-        content: contentEncoded,
-        branch: cleanBranch,
-      }),
+      body: JSON.stringify(commitBody),
     });
 
-    // 4. Open Pull Request
+    if (!putRes.ok) {
+      const errText = await putRes.text();
+      throw new Error(`Failed to commit file ${filePath}: ${putRes.status} ${errText}`);
+    }
+
+    // 6. Open Pull Request
     const prRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls`, {
       method: "POST",
       headers,
       body: JSON.stringify({
         title: prTitle,
         head: cleanBranch,
-        base: "main",
+        base: defaultBranch,
         body: `${prBody}\n\n---\n*Remediated and verified autonomously via **AgentOps AI** (Human-in-the-Loop Approved).*`,
       }),
     });
 
     if (!prRes.ok) {
-      throw new Error(`Failed to create Pull Request: ${prRes.statusText}`);
+      const errText = await prRes.text();
+      throw new Error(`Failed to create Pull Request: ${prRes.status} ${errText}`);
     }
 
     const prData = await prRes.json();
@@ -104,14 +176,14 @@ export async function createGitHubPullRequest({
       simulated: false,
     };
   } catch (error) {
-    console.error("Live GitHub API request failed, falling back to simulated PR:", error);
-    const mockPrNumber = Math.floor(100 + Math.random() * 900);
+    console.error("GitHub API PR creation failed:", error);
+    // If GitHub API fails, return simulated fallback
+    const mockNumber = Math.floor(100 + Math.random() * 900);
     return {
-      pr_url: `https://github.com/${owner}/${repo}/pull/${mockPrNumber}`,
-      pr_number: mockPrNumber,
+      pr_url: `https://github.com/${owner}/${repo}/pull/${mockNumber}`,
+      pr_number: mockNumber,
       branch: branchName,
       simulated: true,
     };
   }
 }
-
