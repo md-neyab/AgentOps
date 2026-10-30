@@ -54,11 +54,7 @@ export function Sidebar() {
           className="flex items-center gap-3 group"
         >
           <div className="w-10 h-10 rounded-2xl bg-blue-600 flex items-center justify-center shadow-md shadow-blue-500/20 text-white group-hover:scale-105 transition-transform">
-            {loadingHref === "/" ? (
-              <Loader2 className="w-5 h-5 animate-spin text-white" />
-            ) : (
-              <Sparkles className="w-5 h-5" />
-            )}
+            <Sparkles className="w-5 h-5" />
           </div>
           <div>
             <span className="font-bold text-slate-900 text-lg tracking-tight">
